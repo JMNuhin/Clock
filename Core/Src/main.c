@@ -62,6 +62,25 @@ extern char buffer[100];
 extern char key;
 char time[100];
 char date[100];
+
+// Alarm variables
+uint8_t alarm_enabled = 0;
+uint8_t alarm_hour = 0;
+uint8_t alarm_minute = 0;
+uint8_t alarm_second = 0;
+uint8_t alarm_triggered = 0;
+
+// Timer variables
+uint8_t timer_enabled = 0;
+uint32_t timer_seconds = 0;
+uint32_t timer_remaining = 0;
+uint8_t timer_start_hour = 0;
+uint8_t timer_start_minute = 0;
+uint8_t timer_start_second = 0;
+
+// Buzzer pin
+#define BUZZER_PIN GPIO_PIN_5
+#define BUZZER_PORT GPIOB
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -76,6 +95,13 @@ void collect_keypad_input(char* buffer, uint8_t length, const char* prompt, cons
 void display_formatted_input(char* buffer, uint8_t current_idx, uint8_t total_length, const char* format);
 void handle_time_setting(void);
 void handle_date_setting(void);
+void handle_alarm_setting(void);
+void handle_timer_setting(void);
+void check_alarm(void);
+void update_timer(void);
+void display_timer(void);
+void buzzer_on(void);
+void buzzer_off(void);
 
 /* USER CODE END PFP */
 
@@ -146,10 +172,35 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     get_time_date(time, date);
+    
+    // Display date on row 0 left (first 8 chars)
     lcd_put_cur(0, 0);
-    lcd_send_string(date);
+    char date_short[9];
+    snprintf(date_short, 9, "%.8s", date);
+    lcd_send_string(date_short);
+    
+    // Display time on row 1 left (first 8 chars)
     lcd_put_cur(1, 0);
     lcd_send_string(time);
+    
+    // Display alarm if set (row 0 right)
+    if(alarm_enabled) {
+      lcd_put_cur(0, 9);
+      char alarm_str[9];
+      snprintf(alarm_str, 9, "A:%02d:%02d", alarm_hour, alarm_minute);
+      lcd_send_string(alarm_str);
+    } else {
+      lcd_put_cur(0, 8);
+      lcd_send_string("        ");
+    }
+    
+    // Display timer if set (row 1 right)
+    if(timer_enabled && timer_remaining > 0) {
+      display_timer();
+    } else if(!timer_enabled) {
+      lcd_put_cur(1, 8);
+      lcd_send_string("        ");
+    }
 
     if(keypressed == 1){
       scanKeypad(colpin);
@@ -164,6 +215,27 @@ int main(void)
     // Date setting mode
     if(key == '*'){
       handle_date_setting();
+    }
+    
+    // Alarm setting mode
+    if(key == 'A'){
+      handle_alarm_setting();
+    }
+    
+    // Timer setting mode
+    if(key == 'B'){
+      handle_timer_setting();
+    }
+    
+    // Check alarm
+    if(alarm_enabled){
+      check_alarm();
+    }
+    
+    // Update timer
+    if(timer_enabled){
+      update_timer();
+      display_timer();
     }
     
   }
@@ -514,6 +586,180 @@ void handle_date_setting(void)
   
   lcd_clear();
   key = '\0';
+}
+
+/**
+  * @brief Handle alarm setting via keypad
+  */
+void handle_alarm_setting(void)
+{
+  char alarm_input[7] = {0};
+  uint8_t hours, minutes, seconds;
+  
+  collect_keypad_input(alarm_input, 6, "Set Alarm:", "00:00:00");
+  
+  // Parse alarm time
+  hours = (alarm_input[0] - '0') * 10 + (alarm_input[1] - '0');
+  minutes = (alarm_input[2] - '0') * 10 + (alarm_input[3] - '0');
+  seconds = (alarm_input[4] - '0') * 10 + (alarm_input[5] - '0');
+  
+  // Validate and set
+  if(hours < 24 && minutes < 60 && seconds < 60) {
+    alarm_hour = hours;
+    alarm_minute = minutes;
+    alarm_second = seconds;
+    alarm_enabled = 1;
+    alarm_triggered = 0;
+    
+    lcd_clear();
+    lcd_send_string("Alarm Set!");
+    HAL_Delay(1500);
+  } else {
+    lcd_clear();
+    lcd_send_string("Invalid Alarm!");
+    HAL_Delay(1500);
+  }
+  
+  lcd_clear();
+  key = '\0';
+}
+
+/**
+  * @brief Handle timer setting via keypad
+  */
+void handle_timer_setting(void)
+{
+  char timer_input[7] = {0};
+  uint8_t hours, minutes, seconds;
+  
+  collect_keypad_input(timer_input, 6, "Set Timer:", "00:00:00");
+  
+  // Parse timer duration
+  hours = (timer_input[0] - '0') * 10 + (timer_input[1] - '0');
+  minutes = (timer_input[2] - '0') * 10 + (timer_input[3] - '0');
+  seconds = (timer_input[4] - '0') * 10 + (timer_input[5] - '0');
+  
+  // Validate and set
+  if(hours < 24 && minutes < 60 && seconds < 60) {
+    timer_seconds = hours * 3600 + minutes * 60 + seconds;
+    timer_remaining = timer_seconds;
+    timer_enabled = (timer_seconds > 0) ? 1 : 0;
+    
+    // Save current RTC time as timer start time
+    RTC_TimeTypeDef gTime;
+    HAL_RTC_GetTime(&hrtc, &gTime, RTC_FORMAT_BIN);
+    timer_start_hour = gTime.Hours;
+    timer_start_minute = gTime.Minutes;
+    timer_start_second = gTime.Seconds;
+    
+    lcd_clear();
+    lcd_send_string("Timer Set!");
+    HAL_Delay(1500);
+  } else {
+    lcd_clear();
+    lcd_send_string("Invalid Timer!");
+    HAL_Delay(1500);
+  }
+  
+  lcd_clear();
+  key = '\0';
+}
+
+/**
+  * @brief Check if alarm time matches current time
+  */
+void check_alarm(void)
+{
+  RTC_TimeTypeDef gTime;
+  HAL_RTC_GetTime(&hrtc, &gTime, RTC_FORMAT_BIN);
+  
+  if(!alarm_triggered && 
+     gTime.Hours == alarm_hour && 
+     gTime.Minutes == alarm_minute && 
+     gTime.Seconds == alarm_second) {
+    alarm_triggered = 1;
+    buzzer_on();
+    
+    // Keep buzzer on for 5 seconds
+    HAL_Delay(5000);
+    buzzer_off();
+    
+    // Disable alarm after triggering
+    alarm_enabled = 0;
+  }
+}
+
+/**
+  * @brief Update timer countdown
+  */
+void update_timer(void)
+{
+  // Get current RTC time
+  RTC_TimeTypeDef gTime;
+  HAL_RTC_GetTime(&hrtc, &gTime, RTC_FORMAT_BIN);
+  
+  // Calculate elapsed seconds since timer started
+  uint32_t current_total_seconds = gTime.Hours * 3600 + gTime.Minutes * 60 + gTime.Seconds;
+  uint32_t start_total_seconds = timer_start_hour * 3600 + timer_start_minute * 60 + timer_start_second;
+  uint32_t elapsed_seconds;
+  
+  // Handle day rollover
+  if(current_total_seconds >= start_total_seconds) {
+    elapsed_seconds = current_total_seconds - start_total_seconds;
+  } else {
+    // Day rolled over (past midnight)
+    elapsed_seconds = (86400 - start_total_seconds) + current_total_seconds;
+  }
+  
+  // Calculate remaining time
+  if(elapsed_seconds >= timer_seconds) {
+    // Timer finished
+    timer_enabled = 0;
+    timer_remaining = 0;
+    buzzer_on();
+    HAL_Delay(5000);
+    buzzer_off();
+  } else {
+    timer_remaining = timer_seconds - elapsed_seconds;
+  }
+}
+
+/**
+  * @brief Display timer at row 1 right corner
+  */
+void display_timer(void)
+{
+  if(timer_enabled && timer_remaining > 0) {
+    uint8_t hrs = timer_remaining / 3600;
+    uint8_t mins = (timer_remaining % 3600) / 60;
+    uint8_t secs = timer_remaining % 60;
+    
+    char timer_str[9];
+    if(hrs > 0) {
+      snprintf(timer_str, 9, "%02d:%02d:%02d", hrs, mins, secs);
+    } else {
+      snprintf(timer_str, 9, "  %02d:%02d", mins, secs);
+    }
+    
+    lcd_put_cur(1, 8);
+    lcd_send_string(timer_str);
+  }
+}
+
+/**
+  * @brief Turn buzzer on
+  */
+void buzzer_on(void)
+{
+  HAL_GPIO_WritePin(BUZZER_PORT, BUZZER_PIN, GPIO_PIN_SET);
+}
+
+/**
+  * @brief Turn buzzer off
+  */
+void buzzer_off(void)
+{
+  HAL_GPIO_WritePin(BUZZER_PORT, BUZZER_PIN, GPIO_PIN_RESET);
 }
 
 /**
