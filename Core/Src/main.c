@@ -29,6 +29,7 @@
 #include <sys/types.h>
 #include "keypad.h"
 #include "stringer.h"
+#include "clock.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -54,10 +55,11 @@ TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
 int keypressed = 0;
-int counter =0;
 uint16_t colpin;
 extern char buffer[100];
 extern char key;
+char time[100];
+char date[100];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -114,6 +116,8 @@ int main(void)
   lcd_clear();
   lcd_put_cur(0, 0);
   lcd_send_string("hello");
+  HAL_Delay(3000);
+  lcd_clear();
   
 
   /* USER CODE END 2 */
@@ -125,17 +129,14 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    
-   if(keypressed == 1)
-   {
-    scanKeypad(colpin);
-    lcd_clear();
-    strup();
+    get_time_date(time, date);
     lcd_put_cur(0, 0);
-    lcd_send_string(buffer);
-     keypressed = 0;
-     
-   }
+    lcd_send_string(date);
+    lcd_put_cur(1, 0);
+    lcd_send_string(time);
+
+    
+   
   }
   /* USER CODE END 3 */
 }
