@@ -27,6 +27,8 @@
 #include "stm32f1xx_hal_tim.h"
 #include "LCD1602.h"
 #include <sys/types.h>
+#include <stdio.h>
+#include <stdint.h>
 #include "keypad.h"
 #include "stringer.h"
 #include "clock.h"
@@ -69,11 +71,24 @@ static void MX_TIM2_Init(void);
 static void MX_RTC_Init(void);
 /* USER CODE BEGIN PFP */
 
+// Helper functions for keypad input
+void collect_keypad_input(char* buffer, uint8_t length, const char* prompt, const char* format);
+void display_formatted_input(char* buffer, uint8_t current_idx, uint8_t total_length, const char* format);
+void handle_time_setting(void);
+void handle_date_setting(void);
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+  * Clock Settings Interface:
+  * - Press '#' to set time (format: HHMMSS)
+  * - Press '*' to set date (format: DDMMYYWW where WW is day of week 1-7)
+  * - Display shows real-time input with formatting
+  * - Validates input ranges before setting RTC
+  */
 
 /* USER CODE END 0 */
 
@@ -118,6 +133,7 @@ int main(void)
   lcd_send_string("hello");
   HAL_Delay(3000);
   lcd_clear();
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6|GPIO_PIN_7, GPIO_PIN_SET);
   
 
   /* USER CODE END 2 */
@@ -135,8 +151,21 @@ int main(void)
     lcd_put_cur(1, 0);
     lcd_send_string(time);
 
+    if(keypressed == 1){
+      scanKeypad(colpin);
+      keypressed = 0;
+    } 
+
+    // Time setting mode
+    if(key == '#'){
+      handle_time_setting();
+    }
     
-   
+    // Date setting mode
+    if(key == '*'){
+      handle_date_setting();
+    }
+    
   }
   /* USER CODE END 3 */
 }
@@ -355,6 +384,137 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+
+/**
+  * @brief Collect keypad input with dynamic display
+  */
+void collect_keypad_input(char* buffer, uint8_t length, const char* prompt, const char* format)
+{
+  uint8_t input_idx = 0;
+  key = '\0';
+  
+  lcd_clear();
+  lcd_put_cur(0, 0);
+  lcd_send_string((char*)prompt);
+  HAL_Delay(1500);
+  
+  lcd_clear();
+  lcd_put_cur(0, 0);
+  lcd_send_string((char*)format);
+  lcd_put_cur(1, 0);
+  
+  while(input_idx < length) {
+    if(keypressed == 1) {
+      scanKeypad(colpin);
+      keypressed = 0;
+      
+      if(key >= '0' && key <= '9') {
+        buffer[input_idx] = key;
+        display_formatted_input(buffer, input_idx, length, format);
+        input_idx++;
+        key = '\0';
+      }
+    }
+    HAL_Delay(50);
+  }
+}
+
+/**
+  * @brief Display formatted input on LCD
+  */
+void display_formatted_input(char* buffer, uint8_t current_idx, uint8_t total_length, const char* format)
+{
+  char display[17];
+  uint8_t buf_idx = 0;
+  uint8_t disp_idx = 0;
+  
+  // Build display string with formatting characters
+  for(uint8_t i = 0; format[i] != '\0' && disp_idx < 16; i++) {
+    if(format[i] >= '0' && format[i] <= '9') {
+      // This is a placeholder position
+      if(buf_idx <= current_idx) {
+        display[disp_idx++] = buffer[buf_idx];
+      } else {
+        display[disp_idx++] = '_';
+      }
+      buf_idx++;
+    } else {
+      // This is a formatting character
+      display[disp_idx++] = format[i];
+    }
+  }
+  display[disp_idx] = '\0';
+  
+  lcd_put_cur(1, 0);
+  lcd_send_string(display);
+}
+
+/**
+  * @brief Handle time setting via keypad
+  */
+void handle_time_setting(void)
+{
+  char time_input[7] = {0};
+  uint8_t hours, minutes, seconds;
+  
+  collect_keypad_input(time_input, 6, "Set Time:", "00:00:00");
+  
+  // Parse time
+  hours = (time_input[0] - '0') * 10 + (time_input[1] - '0');
+  minutes = (time_input[2] - '0') * 10 + (time_input[3] - '0');
+  seconds = (time_input[4] - '0') * 10 + (time_input[5] - '0');
+  
+  // Validate and set
+  if(hours < 24 && minutes < 60 && seconds < 60) {
+    set_time(hours, minutes, seconds);
+    lcd_clear();
+    lcd_send_string("Time Set!");
+    HAL_Delay(1500);
+  } else {
+    lcd_clear();
+    lcd_send_string("Invalid Time!");
+    HAL_Delay(1500);
+  }
+  
+  lcd_clear();
+  key = '\0';
+}
+
+/**
+  * @brief Handle date setting via keypad
+  */
+void handle_date_setting(void)
+{
+  char date_input[9] = {0};
+  uint8_t day, month, year;
+  
+  collect_keypad_input(date_input, 8, "Set Date:", "00-00-00");
+  
+  // Parse date (DD-MM-YY format)
+  day = (date_input[0] - '0') * 10 + (date_input[1] - '0');
+  month = (date_input[2] - '0') * 10 + (date_input[3] - '0');
+  year = (date_input[4] - '0') * 10 + (date_input[5] - '0');
+  
+  // Get day of week (simplified - you can enhance this)
+  uint8_t weekday = (date_input[6] - '0') * 10 + (date_input[7] - '0');
+  if(weekday < 1) weekday = 1;
+  if(weekday > 7) weekday = 7;
+  
+  // Validate and set
+  if(day >= 1 && day <= 31 && month >= 1 && month <= 12 && year <= 99) {
+    set_date(year, month, day, weekday);
+    lcd_clear();
+    lcd_send_string("Date Set!");
+    HAL_Delay(1500);
+  } else {
+    lcd_clear();
+    lcd_send_string("Invalid Date!");
+    HAL_Delay(1500);
+  }
+  
+  lcd_clear();
+  key = '\0';
+}
 
 /**
   * @brief EXTI line detection callbacks
